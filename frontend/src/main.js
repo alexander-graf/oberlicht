@@ -20,6 +20,16 @@ let activeDetails = null;
 let currentView   = 'entries';
 let dragSource    = null; // fullPath of dragged entry
 
+// Filter state — persists across searches
+let filterState = { type: 'all', folder: '' };
+// Type cache — populated as entries are opened, survives page reloads
+let entryTypeCache = JSON.parse(localStorage.getItem('obl-type-cache') || '{}');
+
+function cacheEntryType(fullPath, type) {
+  entryTypeCache[fullPath] = type;
+  localStorage.setItem('obl-type-cache', JSON.stringify(entryTypeCache));
+}
+
 const defaultGenOpts = () => ({ length: 20, upper: true, lower: true, numbers: true, symbols: true, noAmbiguous: false });
 let genOpts = defaultGenOpts();
 
@@ -48,7 +58,18 @@ document.querySelector('#app').innerHTML = `
     </div>
     <div class="search-wrap" id="search-wrap">
       <input id="search" type="text" placeholder="Suchen…" autocomplete="off" spellcheck="false"/>
+      <button class="btn-filter" id="btn-filter" title="Filter">▾</button>
       <div class="entry-counter" id="entry-counter"></div>
+    </div>
+    <div class="filter-bar" id="filter-bar" style="display:none">
+      <div class="filter-row" id="filter-type-row">
+        <span class="filter-label">Typ</span>
+        <div class="filter-chips" id="filter-type-chips"></div>
+      </div>
+      <div class="filter-row" id="filter-folder-row" style="display:none">
+        <span class="filter-label">Ordner</span>
+        <div class="filter-chips" id="filter-folder-chips"></div>
+      </div>
     </div>
     <div id="entry-list" class="entry-list"></div>
   </div>
@@ -182,7 +203,9 @@ function renderTree(node, autoOpen = false) {
     row.className = 'entry-row';
     row.dataset.path = entry.fullPath;
     row.draggable = true;
+    const cachedType = entryTypeCache[entry.fullPath];
     row.innerHTML = `<span class="entry-icon">🔑</span><span class="entry-name">${escHtml(entry.name)}</span>`;
+    if (cachedType && cachedType !== 'web') row.appendChild(makeTypeBadge(cachedType));
     row.addEventListener('click', () => selectEntry(entry, row));
     row.addEventListener('dragstart', e => {
       dragSource = entry.fullPath;
@@ -237,13 +260,110 @@ function showEmptyState() {
 async function reloadList() {
   const entries = await ListPasswords();
   allEntries = entries || [];
-  renderList(allEntries);
+  renderList(getFilteredEntries());
+  if (document.getElementById('filter-bar').style.display !== 'none') renderFilterBar();
 }
 
+// ── Filter ─────────────────────────────────────────────────────────────────
+const TYPE_LABELS = { all: 'Alle', web: 'Web', ssh: 'SSH', macro: 'Makro' };
+const TYPE_ORDER  = ['all', 'web', 'ssh', 'macro'];
+
+function getFilteredEntries() {
+  const q = document.getElementById('search')?.value?.toLowerCase().trim() || '';
+  let result = allEntries;
+  if (q) result = result.filter(en => en.fullPath.toLowerCase().includes(q));
+  if (filterState.folder) {
+    result = result.filter(en => {
+      const parts = en.fullPath.split('/');
+      return parts.length > 1 && parts[0] === filterState.folder;
+    });
+  }
+  if (filterState.type !== 'all') {
+    result = result.filter(en => {
+      const cached = entryTypeCache[en.fullPath];
+      if (filterState.type === 'web') return !cached || cached === 'web';
+      return cached === filterState.type;
+    });
+  }
+  return result;
+}
+
+function renderFilterBar() {
+  // Type chips
+  const typeWrap = document.getElementById('filter-type-chips');
+  if (typeWrap) {
+    typeWrap.innerHTML = '';
+    for (const t of TYPE_ORDER) {
+      // Count how many entries match this type (from cache)
+      let count;
+      if (t === 'all') {
+        count = allEntries.length;
+      } else if (t === 'web') {
+        count = allEntries.filter(en => !entryTypeCache[en.fullPath] || entryTypeCache[en.fullPath] === 'web').length;
+      } else {
+        count = allEntries.filter(en => entryTypeCache[en.fullPath] === t).length;
+      }
+      if (t !== 'all' && count === 0) continue; // hide empty types
+      const chip = document.createElement('button');
+      chip.className = 'filter-chip' + (filterState.type === t ? ' active' : '');
+      chip.dataset.type = t;
+      chip.innerHTML = `${TYPE_LABELS[t]}<span class="filter-chip-count">${count}</span>`;
+      chip.addEventListener('click', () => {
+        filterState.type = t;
+        renderFilterBar();
+        renderList(getFilteredEntries(), !!document.getElementById('search')?.value?.trim());
+      });
+      typeWrap.appendChild(chip);
+    }
+  }
+
+  // Folder chips — unique top-level folders
+  const folders = [...new Set(
+    allEntries.filter(en => en.fullPath.includes('/')).map(en => en.fullPath.split('/')[0])
+  )].sort();
+  const folderRow  = document.getElementById('filter-folder-row');
+  const folderWrap = document.getElementById('filter-folder-chips');
+  if (folderRow && folderWrap) {
+    if (folders.length === 0) { folderRow.style.display = 'none'; return; }
+    folderRow.style.display = '';
+    folderWrap.innerHTML = '';
+    const allChip = document.createElement('button');
+    allChip.className = 'filter-chip' + (!filterState.folder ? ' active' : '');
+    allChip.textContent = 'Alle';
+    allChip.addEventListener('click', () => {
+      filterState.folder = '';
+      renderFilterBar();
+      renderList(getFilteredEntries(), !!document.getElementById('search')?.value?.trim());
+    });
+    folderWrap.appendChild(allChip);
+    for (const f of folders) {
+      const count = allEntries.filter(en => en.fullPath.startsWith(f + '/')).length;
+      const chip = document.createElement('button');
+      chip.className = 'filter-chip' + (filterState.folder === f ? ' active' : '');
+      chip.innerHTML = `${escHtml(f)}<span class="filter-chip-count">${count}</span>`;
+      chip.addEventListener('click', () => {
+        filterState.folder = filterState.folder === f ? '' : f;
+        renderFilterBar();
+        renderList(getFilteredEntries(), !!document.getElementById('search')?.value?.trim());
+      });
+      folderWrap.appendChild(chip);
+    }
+  }
+}
+
+// Filter toggle
+document.getElementById('btn-filter').addEventListener('click', () => {
+  const bar  = document.getElementById('filter-bar');
+  const btn  = document.getElementById('btn-filter');
+  const open = bar.style.display === 'none';
+  bar.style.display = open ? '' : 'none';
+  btn.classList.toggle('active', open);
+  if (open) renderFilterBar();
+});
+
 // ── Search ─────────────────────────────────────────────────────────────────
-document.getElementById('search').addEventListener('input', e => {
-  const q = e.target.value.toLowerCase().trim();
-  renderList(q ? allEntries.filter(en => en.fullPath.toLowerCase().includes(q)) : allEntries, !!q);
+document.getElementById('search').addEventListener('input', () => {
+  renderList(getFilteredEntries(), !!document.getElementById('search').value.trim());
 });
 
 // ── Select entry ───────────────────────────────────────────────────────────
@@ -253,8 +373,30 @@ function selectEntry(entry, rowEl) {
   activeEntry = entry; activeDetails = null;
   showLoading(entry);
   GetPassword(entry.fullPath)
-    .then(details => { activeDetails = details; showDetail(entry, details); })
+    .then(details => {
+      activeDetails = details;
+      // Cache type for filter badges — don't need to re-decrypt later
+      const t = detectEntryType(details);
+      if (entryTypeCache[entry.fullPath] !== t) {
+        cacheEntryType(entry.fullPath, t);
+        // Update badge on the row without re-rendering the whole list
+        const badge = rowEl.querySelector('.type-badge');
+        const newBadge = makeTypeBadge(t);
+        if (badge) badge.replaceWith(newBadge);
+        else rowEl.appendChild(newBadge);
+        // Refresh filter chip counts if bar is open
+        if (document.getElementById('filter-bar').style.display !== 'none') renderFilterBar();
+      }
+      showDetail(entry, details);
+    })
     .catch(err => showError(err));
+}
+
+function makeTypeBadge(type) {
+  const span = document.createElement('span');
+  span.className = `type-badge type-badge-${type}`;
+  span.textContent = type === 'ssh' ? 'SSH' : type === 'macro' ? 'MK' : '';
+  return span;
 }
 
 // ── Detail ─────────────────────────────────────────────────────────────────
