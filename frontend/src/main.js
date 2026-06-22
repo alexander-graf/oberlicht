@@ -463,11 +463,13 @@ function showDetail(entry, details) {
   // Actions
   const entryType  = detectEntryType(details);
   const sshCmd     = composeSSHCmd(details);
+  const hasTOTP = details.fields?.some(f => SENSITIVE_FIELD_KEYS.includes(f.key.toLowerCase()));
   const actions = el('div', 'detail-actions');
   actions.innerHTML = `
     <button class="btn-action" id="btn-edit">✏️ Bearbeiten</button>
     <button class="btn-action" id="btn-copy-all">📄 Alles kopieren</button>
     <button class="btn-action" id="btn-export-entry">📤 Exportieren</button>
+    ${!hasTOTP ? `<button class="btn-action btn-2fa-setup" id="btn-2fa-setup" title="TOTP-Secret eintragen">🔐 2FA</button>` : ''}
     ${entryType === 'ssh' && sshCmd ? `<button class="btn-action btn-ssh-term" id="btn-ssh-term">💻 Terminal</button>` : ''}
     <button class="btn-action danger" id="btn-delete-entry">🗑 Löschen</button>`;
   panel.appendChild(actions);
@@ -657,6 +659,10 @@ function showDetail(entry, details) {
     e2.addEventListener('click', () => OpenURL(e2.dataset.url))
   );
   panel.querySelector('#btn-edit').onclick = () => openModal(entry, details);
+  panel.querySelector('#btn-2fa-setup')?.addEventListener('click', () => {
+    const d2fa = { ...details, fields: [...(details.fields || []), { key: '2fa', value: '' }] };
+    openModal(entry, d2fa);
+  });
   panel.querySelector('#btn-delete-entry').onclick = () => confirmDelete(entry);
   panel.querySelector('#btn-ssh-term')?.addEventListener('click', () => {
     const cmd = composeSSHCmd(details);
