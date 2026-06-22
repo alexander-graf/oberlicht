@@ -152,16 +152,26 @@ pass init <deine-gpg-schluessel-id>   # Passwort-Speicher initialisieren
 
 ## Installation
 
-### Binary herunterladen (empfohlen)
-Das aktuelle Binary von [Releases](https://github.com/alexander-graf/oberlicht/releases) herunterladen und installieren:
+### Fertiges Binary herunterladen (empfohlen)
+
+Vorgefertigte Binaries für **Ubuntu 22.04 / Linux Mint 21+ / Debian 12+** stehen auf der [Releases-Seite](https://github.com/alexander-graf/oberlicht/releases) bereit.
 
 ```bash
+# Herunterladen und entpacken (VERSION durch den aktuellen Tag ersetzen, z.B. v0.1.0)
+tar xzf oberlicht-VERSION-linux-amd64.tar.gz
+
+# In das Benutzer-Bin-Verzeichnis installieren
 install -Dm755 oberlicht ~/.local/bin/oberlicht
+
+# Sicherstellen, dass ~/.local/bin im PATH ist (ggf. in ~/.bashrc eintragen)
+echo 'export PATH=$PATH:$HOME/.local/bin' >> ~/.bashrc
+source ~/.bashrc
 ```
 
 Desktop-Eintrag erstellen, damit die App im Launcher erscheint:
 ```bash
-cat > ~/.local/share/applications/oberlicht.desktop <<EOF
+mkdir -p ~/.local/share/applications
+cat > ~/.local/share/applications/oberlicht.desktop << 'EOF'
 [Desktop Entry]
 Name=Oberlicht
 Comment=pass Passwort-Manager Frontend
@@ -174,28 +184,77 @@ StartupWMClass=Oberlicht
 EOF
 ```
 
+> **Hinweis:** Das vorgefertigte Binary ist gegen Ubuntu-22.04-Systembibliotheken gelinkt. Es läuft **nicht** auf Arch Linux oder anderen Distributionen mit abweichenden Bibliotheksversionen — dort bitte aus dem Quellcode bauen.
+
+---
+
 ### Aus dem Quellcode bauen
+
+#### Ubuntu / Linux Mint (vollständige Schritt-für-Schritt-Anleitung)
+
 ```bash
-# 1. Go 1.21+ installieren
-#    https://go.dev/dl/
+# 1. Build-Abhängigkeiten installieren
+sudo apt update
+sudo apt install -y build-essential pkg-config git \
+    libwebkit2gtk-4.1-dev libgtk-3-dev \
+    nodejs npm
 
-# 2. Wails CLI installieren
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
+# 2. Go 1.23 installieren
+#    Aktuelles Tarball von https://go.dev/dl/ herunterladen
+#    Beispiel für 1.23.0:
+wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
+rm go1.23.0.linux-amd64.tar.gz
 
-# 3. WebKit2GTK installieren
-#    Arch:   sudo pacman -S webkit2gtk-4.1
-#    Ubuntu: sudo apt install libwebkit2gtk-4.1-dev
-#    Fedora: sudo dnf install webkit2gtk4.1-devel
+# 3. Go und ~/go/bin zum PATH hinzufügen (damit wails gefunden wird)
+echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' >> ~/.bashrc
+source ~/.bashrc
 
-# 4. Klonen und bauen
+# 4. Wails CLI installieren
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+# 5. Klonen und bauen
 git clone https://github.com/alexander-graf/oberlicht.git
 cd oberlicht
 wails build -tags webkit2_41
+
+# 6. Installieren
+install -Dm755 build/bin/oberlicht ~/.local/bin/oberlicht
 ```
 
-Das Binary liegt danach unter `build/bin/oberlicht`.
+#### Arch Linux / Manjaro
 
-> Falls dein System `webkit2gtk-4.0` statt `4.1` hat, `-tags webkit2_41` weglassen.
+```bash
+sudo pacman -S go nodejs npm webkit2gtk-4.1 gtk3 base-devel git
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+# ~/go/bin muss im PATH sein
+echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.bashrc && source ~/.bashrc
+
+git clone https://github.com/alexander-graf/oberlicht.git
+cd oberlicht
+wails build -tags webkit2_41
+install -Dm755 build/bin/oberlicht ~/.local/bin/oberlicht
+```
+
+#### Fedora
+
+```bash
+sudo dnf install golang nodejs npm webkit2gtk4.1-devel gtk3-devel gcc git
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.bashrc && source ~/.bashrc
+
+git clone https://github.com/alexander-graf/oberlicht.git
+cd oberlicht
+wails build -tags webkit2_41
+install -Dm755 build/bin/oberlicht ~/.local/bin/oberlicht
+```
+
+> **Warum Node.js?** Wails verwendet Vite, um das HTML/JS-Frontend zu bündeln. Auch wenn das fertige Binary reines Go ist, werden Node.js und npm zur Build-Zeit benötigt.
+>
+> **Warum `~/go/bin` im PATH?** Go installiert CLI-Tools (wie `wails`) standardmäßig in `~/go/bin`, das auf den meisten Systemen nicht automatisch im `$PATH` ist.
+>
+> **webkit2gtk-4.0-Systeme:** `-tags webkit2_41` weglassen, falls nur die ältere `webkit2gtk-4.0` verfügbar ist.
 
 ---
 

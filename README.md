@@ -153,15 +153,25 @@ pass init <your-gpg-key-id>      # initialise the store
 ## Installation
 
 ### Download binary (recommended)
-Grab the latest binary from [Releases](https://github.com/alexander-graf/oberlicht/releases) and install it:
+
+Pre-built binaries for **Ubuntu 22.04 / Linux Mint 21+ / Debian 12+** are available on the [Releases](https://github.com/alexander-graf/oberlicht/releases) page.
 
 ```bash
+# Download and extract (replace VERSION with the latest tag, e.g. v0.1.0)
+tar xzf oberlicht-VERSION-linux-amd64.tar.gz
+
+# Install to user bin directory
 install -Dm755 oberlicht ~/.local/bin/oberlicht
+
+# Make sure ~/.local/bin is in your PATH (add to ~/.bashrc if needed)
+echo 'export PATH=$PATH:$HOME/.local/bin' >> ~/.bashrc
+source ~/.bashrc
 ```
 
 Create a `.desktop` entry so it appears in your app launcher:
 ```bash
-cat > ~/.local/share/applications/oberlicht.desktop <<EOF
+mkdir -p ~/.local/share/applications
+cat > ~/.local/share/applications/oberlicht.desktop << 'EOF'
 [Desktop Entry]
 Name=Oberlicht
 Comment=pass Password Manager Frontend
@@ -173,28 +183,77 @@ StartupWMClass=Oberlicht
 EOF
 ```
 
+> **Note:** The pre-built binary is linked against Ubuntu 22.04 system libraries. It will **not** run on Arch Linux or other distros with different library versions — build from source instead.
+
+---
+
 ### Build from source
+
+#### Ubuntu / Linux Mint (full step-by-step)
+
 ```bash
-# 1. Install Go 1.21+
-#    https://go.dev/dl/
+# 1. Install build dependencies
+sudo apt update
+sudo apt install -y build-essential pkg-config git \
+    libwebkit2gtk-4.1-dev libgtk-3-dev \
+    nodejs npm
 
-# 2. Install Wails CLI
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
+# 2. Install Go 1.23
+#    Download the latest tarball from https://go.dev/dl/
+#    Example for 1.23.0:
+wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
+rm go1.23.0.linux-amd64.tar.gz
 
-# 3. Install WebKit2GTK
-#    Arch:   sudo pacman -S webkit2gtk-4.1
-#    Ubuntu: sudo apt install libwebkit2gtk-4.1-dev
-#    Fedora: sudo dnf install webkit2gtk4.1-devel
+# 3. Add Go and ~/go/bin to PATH (required for wails to be found)
+echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' >> ~/.bashrc
+source ~/.bashrc
 
-# 4. Clone and build
+# 4. Install Wails CLI
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+# 5. Clone and build
 git clone https://github.com/alexander-graf/oberlicht.git
 cd oberlicht
 wails build -tags webkit2_41
+
+# 6. Install
+install -Dm755 build/bin/oberlicht ~/.local/bin/oberlicht
 ```
 
-The binary is at `build/bin/oberlicht`.
+#### Arch Linux / Manjaro
 
-> If your system has `webkit2gtk-4.0` instead of `4.1`, omit the `-tags webkit2_41` flag.
+```bash
+sudo pacman -S go nodejs npm webkit2gtk-4.1 gtk3 base-devel git
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+# Make sure ~/go/bin is in PATH
+echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.bashrc && source ~/.bashrc
+
+git clone https://github.com/alexander-graf/oberlicht.git
+cd oberlicht
+wails build -tags webkit2_41
+install -Dm755 build/bin/oberlicht ~/.local/bin/oberlicht
+```
+
+#### Fedora
+
+```bash
+sudo dnf install golang nodejs npm webkit2gtk4.1-devel gtk3-devel gcc git
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+echo 'export PATH=$PATH:$HOME/go/bin' >> ~/.bashrc && source ~/.bashrc
+
+git clone https://github.com/alexander-graf/oberlicht.git
+cd oberlicht
+wails build -tags webkit2_41
+install -Dm755 build/bin/oberlicht ~/.local/bin/oberlicht
+```
+
+> **Why Node.js?** Wails uses Vite to bundle the HTML/JS frontend. Even though the final binary is pure Go, Node.js and npm are needed at build time.
+>
+> **Why `~/go/bin` in PATH?** Go installs CLI tools (like `wails`) into `~/go/bin`, which is not in `$PATH` by default on most systems.
+>
+> **webkit2gtk-4.0 systems:** Omit `-tags webkit2_41` if your distro only has the older `webkit2gtk-4.0`.
 
 ---
 
