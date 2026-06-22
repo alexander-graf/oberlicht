@@ -178,6 +178,15 @@ if [[ "$PKG_MANAGER" == "apt" ]]; then
     install -Dm755 "$TMPDIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
     success "Installed to $INSTALL_DIR/$BIN_NAME"
 
+    # ── Install icon ───────────────────────────────────────────────────────────
+    ICON_DIR="$HOME/.local/share/icons/hicolor/512x512/apps"
+    mkdir -p "$ICON_DIR"
+    if [[ -f "$TMPDIR/oberlicht.png" ]]; then
+        cp "$TMPDIR/oberlicht.png" "$ICON_DIR/oberlicht.png"
+        gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+        success "Icon installed."
+    fi
+
     # ── PATH ───────────────────────────────────────────────────────────────────
     SHELL_RC=""
     if [[ -f "$HOME/.bashrc" ]]; then SHELL_RC="$HOME/.bashrc"
@@ -199,7 +208,7 @@ if [[ "$PKG_MANAGER" == "apt" ]]; then
 Name=Oberlicht
 Comment=pass Password Manager Frontend
 Exec=$INSTALL_DIR/oberlicht
-Icon=oberlicht
+Icon=$HOME/.local/share/icons/hicolor/512x512/apps/oberlicht.png
 Type=Application
 Categories=Utility;Security;
 Keywords=password;pass;gpg;ssh;

@@ -46,8 +46,9 @@ jobs:
       - name: Package
         run: |
           VERSION=${GITHUB_REF_NAME}
+          cp build/appicon.png build/bin/oberlicht.png
           cd build/bin
-          tar czf oberlicht-${VERSION}-linux-amd64.tar.gz oberlicht
+          tar czf oberlicht-${VERSION}-linux-amd64.tar.gz oberlicht oberlicht.png
           echo "TARBALL=build/bin/oberlicht-${VERSION}-linux-amd64.tar.gz" >> $GITHUB_ENV
 
       - name: Create Release
