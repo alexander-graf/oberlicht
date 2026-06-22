@@ -29,3 +29,4 @@ Thumbs.db
 
 # Wails dev temp files
 frontend/wailsjs/
+run.sh

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"os/exec"
@@ -64,6 +66,9 @@ func storeDir() string {
 
 func (a *App) ListPasswords() ([]PasswordEntry, error) {
 	root := storeDir()
+	if _, err := os.Stat(root); os.IsNotExist(err) {
+		return []PasswordEntry{}, fmt.Errorf("pass-Tresor nicht gefunden: %s — bitte 'pass init' ausführen", root)
+	}
 	var entries []PasswordEntry
 
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -86,6 +91,16 @@ func (a *App) ListPasswords() ([]PasswordEntry, error) {
 	})
 
 	return entries, err
+}
+
+// MoveEntry moves/renames a pass entry without decrypting it.
+func (a *App) MoveEntry(from, to string) error {
+	cmd := exec.Command("pass", "mv", "--force", from, to)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("verschieben fehlgeschlagen: %s", string(out))
+	}
+	return nil
 }
 
 func (a *App) GetPassword(fullPath string) (PasswordDetails, error) {
@@ -201,13 +216,14 @@ func (a *App) GeneratePasswordAdvanced(opts GeneratorOptions) (string, error) {
 
 	length := max(opts.Length, 4)
 
-	result := make([]byte, length)
+	runes := []rune(chars)
+	result := make([]rune, length)
 	for i := range result {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(runes))))
 		if err != nil {
 			return "", err
 		}
-		result[i] = chars[n.Int64()]
+		result[i] = runes[n.Int64()]
 	}
 	return string(result), nil
 }
@@ -312,6 +328,88 @@ func csvEsc(s string) string {
 	return s
 }
 
+// ── Backup / Restore ─────────────────────────────────────────────────────
+
+// BackupStore creates an AES-256 GPG-encrypted tar.gz of the entire pass store.
+// The output file can be stored anywhere (USB, cloud) — only the passphrase decrypts it.
+func (a *App) BackupStore(destPath, passphrase string) error {
+	store  := storeDir()
+	parent := filepath.Dir(store)
+	name   := filepath.Base(store)
+
+	// Passphrase via temp file to avoid ps-aux exposure
+	tmp, err := os.CreateTemp("", "obl-bp-*")
+	if err != nil { return fmt.Errorf("temp file: %w", err) }
+	defer os.Remove(tmp.Name())
+	if _, err = tmp.WriteString(passphrase); err != nil { return err }
+	tmp.Close()
+
+	tarCmd := exec.Command("tar", "-czf", "-", "-C", parent, name)
+	gpgCmd := exec.Command("gpg", "--symmetric", "--cipher-algo", "AES256",
+		"--batch", "--yes", "--passphrase-file", tmp.Name(), "--output", destPath)
+
+	r, w := io.Pipe()
+	tarCmd.Stdout = w
+	gpgCmd.Stdin  = r
+
+	var errBuf bytes.Buffer
+	tarCmd.Stderr = &errBuf
+	gpgCmd.Stderr = &errBuf
+
+	if err := gpgCmd.Start(); err != nil { return fmt.Errorf("gpg starten: %w", err) }
+	if err := tarCmd.Start(); err != nil {
+		gpgCmd.Process.Kill()
+		return fmt.Errorf("tar starten: %w", err)
+	}
+
+	tarErr := tarCmd.Wait()
+	w.Close() // EOF → gpg beendet sich sauber
+	gpgErr := gpgCmd.Wait()
+
+	if tarErr != nil { return fmt.Errorf("archivieren fehlgeschlagen: %w\n%s", tarErr, errBuf.String()) }
+	if gpgErr != nil { return fmt.Errorf("verschlüsseln fehlgeschlagen: %w\n%s", gpgErr, errBuf.String()) }
+	return nil
+}
+
+// RestoreStore decrypts a backup file and extracts it back to the store location.
+// Existing files are overwritten; new files are added. Removed files stay unless store is cleared first.
+func (a *App) RestoreStore(srcPath, passphrase string) error {
+	store  := storeDir()
+	parent := filepath.Dir(store)
+
+	tmp, err := os.CreateTemp("", "obl-rs-*")
+	if err != nil { return fmt.Errorf("temp file: %w", err) }
+	defer os.Remove(tmp.Name())
+	if _, err = tmp.WriteString(passphrase); err != nil { return err }
+	tmp.Close()
+
+	gpgCmd := exec.Command("gpg", "--decrypt", "--batch",
+		"--passphrase-file", tmp.Name(), srcPath)
+	tarCmd := exec.Command("tar", "-xzf", "-", "-C", parent)
+
+	r, w := io.Pipe()
+	gpgCmd.Stdout = w
+	tarCmd.Stdin  = r
+
+	var errBuf bytes.Buffer
+	gpgCmd.Stderr = &errBuf
+	tarCmd.Stderr = &errBuf
+
+	if err := tarCmd.Start(); err != nil { return fmt.Errorf("tar starten: %w", err) }
+	if err := gpgCmd.Start(); err != nil {
+		tarCmd.Process.Kill()
+		return fmt.Errorf("gpg starten: %w", err)
+	}
+
+	gpgErr := gpgCmd.Wait()
+	w.Close()
+	tarErr := tarCmd.Wait()
+
+	if gpgErr != nil { return fmt.Errorf("entschlüsseln fehlgeschlagen (falsches Passwort?): %w\n%s", gpgErr, errBuf.String()) }
+	if tarErr != nil { return fmt.Errorf("entpacken fehlgeschlagen: %w\n%s", tarErr, errBuf.String()) }
+	return nil
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 func buildPassContent(data EntryData) string {
@@ -338,13 +436,24 @@ func parsePassContent(raw string) PasswordDetails {
 	details.Password = lines[0]
 
 	var noteLines []string
+	inNotes := false
 	for _, line := range lines[1:] {
+		if inNotes {
+			noteLines = append(noteLines, line)
+			continue
+		}
+		if line == "" {
+			inNotes = true
+			continue
+		}
 		idx := strings.Index(line, ": ")
 		if idx > 0 && !strings.Contains(line[:idx], " ") {
 			key := strings.TrimSpace(line[:idx])
 			value := strings.TrimSpace(line[idx+2:])
 			details.Fields = append(details.Fields, PasswordField{Key: key, Value: value})
 		} else {
+			// Kein Feld-Format → ab hier Notizblock
+			inNotes = true
 			noteLines = append(noteLines, line)
 		}
 	}
