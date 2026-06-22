@@ -1,0 +1,31 @@
+# Compiled binaries
+build/bin/
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+
+# Go build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Wails dev temp files
+frontend/wailsjs/
