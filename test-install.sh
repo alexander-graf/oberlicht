@@ -14,7 +14,9 @@ case "$TARGET" in
     ubuntu24)         IMAGE="ubuntu:24.04"               LABEL="Ubuntu 24.04" ;;
     mint|mint22)      IMAGE="linuxmintd/mint22-amd64"    LABEL="Linux Mint 22" ;;
     mint21)           IMAGE="linuxmintd/mint21-amd64"    LABEL="Linux Mint 21" ;;
-    *)  echo "Usage: $0 [ubuntu22|ubuntu24|mint21|mint22]"; exit 1 ;;
+    fedora|fedora41)  IMAGE="fedora:41"                  LABEL="Fedora 41" ;;
+    fedora40)         IMAGE="fedora:40"                  LABEL="Fedora 40" ;;
+    *)  echo "Usage: $0 [ubuntu22|ubuntu24|mint21|mint22|fedora]"; exit 1 ;;
 esac
 
 BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; NC='\033[0m'
@@ -38,9 +40,15 @@ chmod +x /usr/local/bin/sudo
 # ── Fake interactive prompts (answer Y to everything) ─────────────────────────
 export DEBIAN_FRONTEND=noninteractive
 
-# ── Bootstrap curl (may be missing on bare Ubuntu) ───────────────────────────
-apt-get update -qq
-apt-get install -y curl ca-certificates gnupg 2>&1 | grep -E "^(Setting|Preparing|Get|Err|W:)" || true
+# ── Bootstrap curl + gpg (distro-aware) ──────────────────────────────────────
+if command -v apt-get &>/dev/null; then
+    apt-get update -qq
+    apt-get install -y curl ca-certificates gnupg 2>&1 | grep -E "^(Setting|Preparing|Get|Err|W:)" || true
+elif command -v dnf &>/dev/null; then
+    dnf install -y curl gnupg2 ca-certificates 2>&1 | grep -E "^(Installing|Upgrading|Complete)" || true
+elif command -v zypper &>/dev/null; then
+    zypper install -y curl gpg2 ca-certificates 2>&1 | grep -E "^(Installing|Downloading)" || true
+fi
 
 echo ""
 echo "════════════════════════════════════════════════════════"
@@ -48,8 +56,8 @@ echo "  Running Oberlicht installer"
 echo "════════════════════════════════════════════════════════"
 echo ""
 
-# Run installer non-interactively: auto-answer all prompts with Y/Enter
-yes "" | bash <(curl -fsSL \
+# Run installer non-interactively: auto-answer all prompts with Y
+yes "y" | bash <(curl -fsSL \
     https://raw.githubusercontent.com/alexander-graf/oberlicht/main/install.sh) \
     || true
 
