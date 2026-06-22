@@ -10,7 +10,8 @@ import {
   AppendToAuthorizedKeys, GetHomeDir, GetClipboard,
   BackupStore, RestoreStore,
   AutoFill, AutoFillSSH, AutoFillCmd, ExecuteMacro,
-  GetSSHFingerprint, CheckDependencies
+  GetSSHFingerprint, CheckDependencies,
+  GetTOTP, OpenSSHTerminal, ClearClipboard
 } from '../wailsjs/go/main/App';
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -118,22 +119,61 @@ document.addEventListener('click', () => {
 });
 
 // ── Nav tabs ───────────────────────────────────────────────────────────────
-document.querySelectorAll('.nav-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    currentView = tab.dataset.view;
-    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    const isEntries = currentView === 'entries';
-    document.getElementById('search-wrap').style.display = isEntries ? '' : 'none';
-    document.getElementById('entry-list').style.display  = isEntries ? '' : 'none';
-    document.getElementById('btn-new').style.display     = isEntries ? '' : 'none';
-    if (isEntries) { showEmptyState(); return; }
-    if (currentView === 'generator') renderGeneratorPanel();
-    if (currentView === 'ablage')    renderAblagePanel();
-    if (currentView === 'export')    renderExportPanel();
-    if (currentView === 'system')    renderSystemPanel();
-  });
-});
+let filterBarWasOpen = false; // remember filter bar state across tab switches
+
+function switchTab(view) {
+  if (view === currentView) return;
+  currentView = view;
+
+  document.querySelectorAll('.nav-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.view === view));
+
+  const isEntries = view === 'entries';
+
+  // Sidebar elements — only visible on Einträge
+  document.getElementById('search-wrap').style.display = isEntries ? '' : 'none';
+  document.getElementById('entry-list').style.display  = isEntries ? '' : 'none';
+  document.getElementById('btn-new').style.display     = isEntries ? '' : 'none';
+
+  // Filter bar — save/restore open state, only show on Einträge
+  const filterBar = document.getElementById('filter-bar');
+  const filterBtn = document.getElementById('btn-filter');
+  if (isEntries) {
+    if (filterBarWasOpen) {
+      filterBar.style.display = '';
+      filterBtn.classList.add('active');
+      renderFilterBar();
+    }
+  } else {
+    filterBarWasOpen = filterBar.style.display !== 'none';
+    filterBar.style.display = 'none';
+    filterBtn.classList.remove('active');
+  }
+
+  // Right panel
+  if (isEntries) {
+    // Restore whatever was open — detail, loading, or empty state
+    if (activeEntry && activeDetails) {
+      showDetail(activeEntry, activeDetails);
+    } else if (activeEntry) {
+      showLoading(activeEntry);
+      GetPassword(activeEntry.fullPath)
+        .then(d => { activeDetails = d; showDetail(activeEntry, d); })
+        .catch(showError);
+    } else {
+      showEmptyState();
+    }
+    return;
+  }
+
+  if (view === 'generator') renderGeneratorPanel();
+  if (view === 'ablage')    renderAblagePanel();
+  if (view === 'export')    renderExportPanel();
+  if (view === 'system')    renderSystemPanel();
+}
+
+document.querySelectorAll('.nav-tab').forEach(tab =>
+  tab.addEventListener('click', () => switchTab(tab.dataset.view)));
 
 // ── Tree + Drag & Drop ─────────────────────────────────────────────────────
 function buildTree(entries) {
@@ -421,11 +461,14 @@ function showDetail(entry, details) {
   panel.innerHTML += `<div class="detail-title">${escHtml(entry.name)}</div>`;
 
   // Actions
+  const entryType  = detectEntryType(details);
+  const sshCmd     = composeSSHCmd(details);
   const actions = el('div', 'detail-actions');
   actions.innerHTML = `
     <button class="btn-action" id="btn-edit">✏️ Bearbeiten</button>
     <button class="btn-action" id="btn-copy-all">📄 Alles kopieren</button>
     <button class="btn-action" id="btn-export-entry">📤 Exportieren</button>
+    ${entryType === 'ssh' && sshCmd ? `<button class="btn-action btn-ssh-term" id="btn-ssh-term">💻 Terminal</button>` : ''}
     <button class="btn-action danger" id="btn-delete-entry">🗑 Löschen</button>`;
   panel.appendChild(actions);
   panel.appendChild(buildAutofillBar(entry, details));
@@ -463,6 +506,48 @@ function showDetail(entry, details) {
     }
     sec.appendChild(table);
     panel.appendChild(sec);
+  }
+
+  // TOTP (live code + countdown ring when totp: or otp: field present)
+  const totpField = details.fields?.find(f => ['totp','otp','secret','2fa'].includes(f.key.toLowerCase()));
+  if (totpField) {
+    const totpSec = el('div', 'section');
+    totpSec.innerHTML = `
+      <div class="section-label">2FA / TOTP</div>
+      <div class="totp-box" id="totp-box">
+        <svg class="totp-ring" viewBox="0 0 36 36">
+          <circle class="totp-ring-bg" cx="18" cy="18" r="15.9"/>
+          <circle class="totp-ring-arc" id="totp-arc" cx="18" cy="18" r="15.9"
+            stroke-dasharray="100 100" stroke-dashoffset="0"/>
+        </svg>
+        <span class="totp-code" id="totp-code">——</span>
+        <button class="field-copy-btn" id="totp-copy" title="Kopieren">📋</button>
+      </div>`;
+    panel.appendChild(totpSec);
+
+    let totpTimer;
+    const refreshTOTP = () => {
+      GetTOTP(totpField.value)
+        .then(r => {
+          const codeEl = panel.querySelector('#totp-code');
+          const arcEl  = panel.querySelector('#totp-arc');
+          if (!codeEl) { clearInterval(totpTimer); return; }
+          codeEl.textContent = r.code.slice(0,3) + ' ' + r.code.slice(3);
+          const pct = (r.remaining / r.period) * 100;
+          arcEl.setAttribute('stroke-dasharray', `${pct} 100`);
+          arcEl.style.stroke = r.remaining <= 5 ? 'var(--danger)' : r.remaining <= 10 ? 'var(--accent)' : 'var(--success)';
+        })
+        .catch(() => { const el = panel.querySelector('#totp-code'); if (el) el.textContent = 'Fehler'; });
+    };
+    refreshTOTP();
+    totpTimer = setInterval(refreshTOTP, 1000);
+    panel.querySelector('#totp-copy')?.addEventListener('click', () => {
+      const code = panel.querySelector('#totp-code')?.textContent?.replace(/\s/g,'') || '';
+      copyText(code, panel.querySelector('#totp-copy'));
+    });
+    // Clean up timer when detail panel is replaced
+    const obs = new MutationObserver(() => { if (!document.contains(totpSec)) { clearInterval(totpTimer); obs.disconnect(); } });
+    obs.observe(document.getElementById('main'), { childList: true });
   }
 
   // SSH fingerprint (lazy-load when public-key field is present)
@@ -527,6 +612,12 @@ function showDetail(entry, details) {
   );
   panel.querySelector('#btn-edit').onclick = () => openModal(entry, details);
   panel.querySelector('#btn-delete-entry').onclick = () => confirmDelete(entry);
+  panel.querySelector('#btn-ssh-term')?.addEventListener('click', () => {
+    const cmd = composeSSHCmd(details);
+    if (!cmd) return;
+    OpenSSHTerminal(cmd).catch(err =>
+      alert(`Terminal konnte nicht geöffnet werden:\n${err}`));
+  });
 }
 
 // ── Auto-Fill ──────────────────────────────────────────────────────────────
@@ -1364,6 +1455,7 @@ function copyText(text, btn) {
     const orig = btn.innerHTML;
     btn.innerHTML = '✓'; btn.classList.add('copied');
     setTimeout(() => { btn.innerHTML = orig; btn.classList.remove('copied'); }, 2000);
+    scheduleClipClear();
   });
 }
 function flashBtn(btn, label, ms) {
@@ -1382,6 +1474,16 @@ function timeAgo(ts) {
 // ── System panel ───────────────────────────────────────────────────────────
 let cachedDeps = null;
 
+const CLIP_CLEAR_OPTIONS = [
+  { value: '0',    label: 'Nie' },
+  { value: '30',   label: '30 Sekunden' },
+  { value: '45',   label: '45 Sekunden' },
+  { value: '60',   label: '1 Minute' },
+  { value: '120',  label: '2 Minuten' },
+  { value: '300',  label: '5 Minuten' },
+  { value: '600',  label: '10 Minuten' },
+];
+
 async function renderSystemPanel() {
   const main = document.getElementById('main');
   main.innerHTML = `<div class="system-panel"><h2>⚙️ System &amp; Einstellungen</h2><div class="sys-loading">Prüfe…</div></div>`;
@@ -1389,6 +1491,7 @@ async function renderSystemPanel() {
   cachedDeps = deps;
 
   const autofillDelay = parseInt(localStorage.getItem('autofill-delay-s') || '2', 10);
+  const clipClear     = localStorage.getItem('clip-clear-s') || '45';
 
   const depRows = deps.map(d => `
     <tr>
@@ -1401,6 +1504,10 @@ async function renderSystemPanel() {
         ${d.required ? 'Pflicht' : 'Optional'}
       </td>
     </tr>`).join('');
+
+  const clipOpts = CLIP_CLEAR_OPTIONS.map(o =>
+    `<option value="${o.value}" ${clipClear === o.value ? 'selected' : ''}>${escHtml(o.label)}</option>`
+  ).join('');
 
   main.innerHTML = `
     <div class="system-panel">
@@ -1431,9 +1538,14 @@ async function renderSystemPanel() {
 
       <div class="sys-section">
         <div class="section-label" style="margin-bottom:8px">Zwischenablage</div>
-        <div style="font-size:13px;color:var(--muted);line-height:1.6">
-          Auf Wayland: <code>wl-paste</code> (wl-clipboard)<br>
-          Auf X11: <code>xclip</code> oder <code>xsel</code>
+        <div class="sys-row">
+          <label>Automatisch leeren nach</label>
+          <select class="form-input" id="sys-clip-clear" style="width:160px">${clipOpts}</select>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">
+          Gilt für manuelles Kopieren im Ablage-Panel.<br>
+          <code>pass</code>-Kopieren (45 Sek.) wird von pass selbst gesteuert.<br>
+          Auf Wayland: <code>wl-copy --clear</code> · X11: <code>xclip</code> / <code>xsel</code>
         </div>
       </div>
     </div>`;
@@ -1445,6 +1557,23 @@ async function renderSystemPanel() {
     e.target.value = v;
     localStorage.setItem('autofill-delay-s', String(v));
   });
+
+  main.querySelector('#sys-clip-clear').addEventListener('change', e => {
+    localStorage.setItem('clip-clear-s', e.target.value);
+    scheduleClipClear(0); // reset any running timer
+  });
+}
+
+// ── Clipboard auto-clear timer ─────────────────────────────────────────────
+let _clipClearTimer = null;
+
+function scheduleClipClear(overrideSeconds) {
+  clearTimeout(_clipClearTimer);
+  const secs = overrideSeconds ?? parseInt(localStorage.getItem('clip-clear-s') || '45', 10);
+  if (secs <= 0) return;
+  _clipClearTimer = setTimeout(() => {
+    ClearClipboard().catch(() => {});
+  }, secs * 1000);
 }
 
 // ── Startup dependency check ────────────────────────────────────────────────

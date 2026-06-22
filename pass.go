@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -246,8 +248,14 @@ func (a *App) GenerateSSHKeyPair(keyType, comment string) (SSHKeyPair, error) {
 		return SSHKeyPair{}, fmt.Errorf("ssh-keygen fehlgeschlagen: %s", string(out))
 	}
 
-	priv, _ := os.ReadFile(keyFile)
-	pub, _ := os.ReadFile(keyFile + ".pub")
+	priv, err := os.ReadFile(keyFile)
+	if err != nil {
+		return SSHKeyPair{}, fmt.Errorf("privaten Schlüssel lesen: %w", err)
+	}
+	pub, err := os.ReadFile(keyFile + ".pub")
+	if err != nil {
+		return SSHKeyPair{}, fmt.Errorf("öffentlichen Schlüssel lesen: %w", err)
+	}
 
 	return SSHKeyPair{
 		PrivateKey: string(priv),
@@ -331,82 +339,130 @@ func csvEsc(s string) string {
 // ── Backup / Restore ─────────────────────────────────────────────────────
 
 // BackupStore creates an AES-256 GPG-encrypted tar.gz of the entire pass store.
-// The output file can be stored anywhere (USB, cloud) — only the passphrase decrypts it.
+// tar/gzip is done natively in Go — no external tar binary needed.
 func (a *App) BackupStore(destPath, passphrase string) error {
-	store  := storeDir()
-	parent := filepath.Dir(store)
-	name   := filepath.Base(store)
+	store := storeDir()
 
-	// Passphrase via temp file to avoid ps-aux exposure
-	tmp, err := os.CreateTemp("", "obl-bp-*")
-	if err != nil { return fmt.Errorf("temp file: %w", err) }
-	defer os.Remove(tmp.Name())
-	if _, err = tmp.WriteString(passphrase); err != nil { return err }
-	tmp.Close()
-
-	tarCmd := exec.Command("tar", "-czf", "-", "-C", parent, name)
-	gpgCmd := exec.Command("gpg", "--symmetric", "--cipher-algo", "AES256",
-		"--batch", "--yes", "--passphrase-file", tmp.Name(), "--output", destPath)
-
-	r, w := io.Pipe()
-	tarCmd.Stdout = w
-	gpgCmd.Stdin  = r
-
-	var errBuf bytes.Buffer
-	tarCmd.Stderr = &errBuf
-	gpgCmd.Stderr = &errBuf
-
-	if err := gpgCmd.Start(); err != nil { return fmt.Errorf("gpg starten: %w", err) }
-	if err := tarCmd.Start(); err != nil {
-		gpgCmd.Process.Kill()
-		return fmt.Errorf("tar starten: %w", err)
+	// Build tar.gz in memory pipe → stream directly into gpg stdin
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("pipe erstellen: %w", err)
 	}
 
-	tarErr := tarCmd.Wait()
-	w.Close() // EOF → gpg beendet sich sauber
-	gpgErr := gpgCmd.Wait()
+	// Passphrase pipe for gpg --passphrase-fd 3
+	ppr, ppw, err := os.Pipe()
+	if err != nil {
+		pr.Close(); pw.Close()
+		return fmt.Errorf("passphrase-pipe erstellen: %w", err)
+	}
+	go func() { ppw.WriteString(passphrase); ppw.Close() }()
 
-	if tarErr != nil { return fmt.Errorf("archivieren fehlgeschlagen: %w\n%s", tarErr, errBuf.String()) }
-	if gpgErr != nil { return fmt.Errorf("verschlüsseln fehlgeschlagen: %w\n%s", gpgErr, errBuf.String()) }
+	gpgCmd := exec.Command("gpg", "--symmetric", "--cipher-algo", "AES256",
+		"--batch", "--yes", "--passphrase-fd", "3", "--output", destPath)
+	gpgCmd.Stdin      = pr
+	gpgCmd.ExtraFiles = []*os.File{ppr}
+	var gpgErr bytes.Buffer
+	gpgCmd.Stderr = &gpgErr
+
+	if err := gpgCmd.Start(); err != nil {
+		pr.Close(); pw.Close(); ppr.Close()
+		return fmt.Errorf("gpg starten: %w", err)
+	}
+	ppr.Close() // child inherited it, parent can close
+
+	// Write tar.gz into pw concurrently while gpg reads from pr
+	tarErr := make(chan error, 1)
+	go func() {
+		defer pw.Close()
+		gz := gzip.NewWriter(pw)
+		tw := tar.NewWriter(gz)
+		err := filepath.Walk(store, func(path string, fi os.FileInfo, err error) error {
+			if err != nil { return err }
+			rel, _ := filepath.Rel(filepath.Dir(store), path)
+			hdr, err := tar.FileInfoHeader(fi, "")
+			if err != nil { return err }
+			hdr.Name = rel
+			if err := tw.WriteHeader(hdr); err != nil { return err }
+			if fi.IsDir() { return nil }
+			f, err := os.Open(path)
+			if err != nil { return err }
+			defer f.Close()
+			_, err = io.Copy(tw, f)
+			return err
+		})
+		if err != nil { tarErr <- err; return }
+		if err := tw.Close(); err != nil { tarErr <- err; return }
+		tarErr <- gz.Close()
+	}()
+
+	tErr := <-tarErr
+	pr.Close()
+	if wErr := gpgCmd.Wait(); wErr != nil {
+		return fmt.Errorf("verschlüsseln fehlgeschlagen (falsches Passwort?): %w\n%s", wErr, gpgErr.String())
+	}
+	if tErr != nil { return fmt.Errorf("archivieren fehlgeschlagen: %w", tErr) }
 	return nil
 }
 
-// RestoreStore decrypts a backup file and extracts it back to the store location.
-// Existing files are overwritten; new files are added. Removed files stay unless store is cleared first.
+// RestoreStore decrypts a GPG backup and extracts it — no external tar needed.
 func (a *App) RestoreStore(srcPath, passphrase string) error {
-	store  := storeDir()
-	parent := filepath.Dir(store)
+	store := storeDir()
 
-	tmp, err := os.CreateTemp("", "obl-rs-*")
-	if err != nil { return fmt.Errorf("temp file: %w", err) }
-	defer os.Remove(tmp.Name())
-	if _, err = tmp.WriteString(passphrase); err != nil { return err }
-	tmp.Close()
+	ppr, ppw, err := os.Pipe()
+	if err != nil { return fmt.Errorf("passphrase-pipe: %w", err) }
+	go func() { ppw.WriteString(passphrase); ppw.Close() }()
 
 	gpgCmd := exec.Command("gpg", "--decrypt", "--batch",
-		"--passphrase-file", tmp.Name(), srcPath)
-	tarCmd := exec.Command("tar", "-xzf", "-", "-C", parent)
+		"--passphrase-fd", "3", srcPath)
+	gpgCmd.ExtraFiles = []*os.File{ppr}
+	var gpgStderr bytes.Buffer
+	gpgCmd.Stderr = &gpgStderr
 
-	r, w := io.Pipe()
-	gpgCmd.Stdout = w
-	tarCmd.Stdin  = r
+	gpgOut, err := gpgCmd.StdoutPipe()
+	if err != nil { ppr.Close(); return err }
 
-	var errBuf bytes.Buffer
-	gpgCmd.Stderr = &errBuf
-	tarCmd.Stderr = &errBuf
-
-	if err := tarCmd.Start(); err != nil { return fmt.Errorf("tar starten: %w", err) }
 	if err := gpgCmd.Start(); err != nil {
-		tarCmd.Process.Kill()
+		ppr.Close()
 		return fmt.Errorf("gpg starten: %w", err)
 	}
+	ppr.Close()
 
-	gpgErr := gpgCmd.Wait()
-	w.Close()
-	tarErr := tarCmd.Wait()
+	// Decompress and extract directly from gpg stdout
+	gz, err := gzip.NewReader(gpgOut)
+	if err != nil {
+		gpgCmd.Wait()
+		return fmt.Errorf("gzip öffnen fehlgeschlagen (falsches Passwort?): %w", err)
+	}
+	tr := tar.NewReader(gz)
+	base := filepath.Dir(store)
 
-	if gpgErr != nil { return fmt.Errorf("entschlüsseln fehlgeschlagen (falsches Passwort?): %w\n%s", gpgErr, errBuf.String()) }
-	if tarErr != nil { return fmt.Errorf("entpacken fehlgeschlagen: %w\n%s", tarErr, errBuf.String()) }
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF { break }
+		if err != nil { gpgCmd.Wait(); return fmt.Errorf("tar lesen: %w", err) }
+
+		target := filepath.Join(base, filepath.Clean("/"+hdr.Name))
+		// Guard against path traversal
+		if !strings.HasPrefix(target, base+string(os.PathSeparator)) && target != base {
+			continue
+		}
+		if hdr.Typeflag == tar.TypeDir {
+			os.MkdirAll(target, hdr.FileInfo().Mode())
+			continue
+		}
+		os.MkdirAll(filepath.Dir(target), 0700)
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode())
+		if err != nil { gpgCmd.Wait(); return fmt.Errorf("datei schreiben: %w", err) }
+		if _, err := io.Copy(f, tr); err != nil {
+			f.Close(); gpgCmd.Wait()
+			return fmt.Errorf("datei kopieren: %w", err)
+		}
+		f.Close()
+	}
+
+	if err := gpgCmd.Wait(); err != nil {
+		return fmt.Errorf("entschlüsseln fehlgeschlagen (falsches Passwort?): %w\n%s", err, gpgStderr.String())
+	}
 	return nil
 }
 

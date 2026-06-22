@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base32"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,16 +118,20 @@ func (a *App) GetClipboard(selection string) (string, error) {
 // ── Keyboard input helpers ────────────────────────────────────────────────
 
 func xdoType(text string) error {
+	var cmd *exec.Cmd
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		out, err := exec.Command("ydotool", "type", "--", text).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("ydotool type: %w — %s", err, strings.TrimSpace(string(out)))
-		}
-		return nil
+		cmd = exec.Command("ydotool", "type", "--file", "-")
+	} else {
+		cmd = exec.Command("xdotool", "type", "--clearmodifiers", "--delay", "30", "--file", "-")
 	}
-	out, err := exec.Command("xdotool", "type", "--clearmodifiers", "--delay", "30", "--", text).CombinedOutput()
+	cmd.Stdin = strings.NewReader(text)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("xdotool type: %w — %s", err, strings.TrimSpace(string(out)))
+		name := "xdotool"
+		if os.Getenv("WAYLAND_DISPLAY") != "" {
+			name = "ydotool"
+		}
+		return fmt.Errorf("%s type: %w — %s", name, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -243,4 +252,104 @@ func (a *App) CheckDependencies() []DepStatus {
 	deps = append(deps, DepStatus{Name: "ssh-keygen", Required: false, Available: check("ssh-keygen"), Description: "SSH-Schlüsselpaar generieren"})
 
 	return deps
+}
+
+// ── TOTP (RFC 6238) ───────────────────────────────────────────────────────
+
+type TOTPResult struct {
+	Code      string `json:"code"`
+	Remaining int    `json:"remaining"` // seconds until next code
+	Period    int    `json:"period"`    // always 30
+}
+
+// GetTOTP computes the current TOTP code from a base32 secret (standard Authenticator format).
+func (a *App) GetTOTP(secret string) (TOTPResult, error) {
+	// Clean up secret: remove spaces, uppercase
+	secret = strings.ToUpper(strings.ReplaceAll(secret, " ", ""))
+	// Pad to multiple of 8
+	if pad := len(secret) % 8; pad != 0 {
+		secret += strings.Repeat("=", 8-pad)
+	}
+	key, err := base32.StdEncoding.DecodeString(secret)
+	if err != nil {
+		return TOTPResult{}, fmt.Errorf("ungültiger TOTP-Secret: %w", err)
+	}
+
+	now := time.Now().Unix()
+	period := int64(30)
+	counter := now / period
+	remaining := int(period - (now % period))
+
+	// HOTP: HMAC-SHA1 of counter
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, uint64(counter))
+	mac := hmac.New(sha1.New, key)
+	mac.Write(buf)
+	h := mac.Sum(nil)
+
+	// Dynamic truncation
+	offset := h[len(h)-1] & 0x0f
+	code := (int64(h[offset]&0x7f)<<24 |
+		int64(h[offset+1])<<16 |
+		int64(h[offset+2])<<8 |
+		int64(h[offset+3])) % int64(math.Pow10(6))
+
+	return TOTPResult{
+		Code:      fmt.Sprintf("%06d", code),
+		Remaining: remaining,
+		Period:    30,
+	}, nil
+}
+
+// ── SSH Terminal ──────────────────────────────────────────────────────────
+
+// OpenSSHTerminal launches the user's terminal emulator with the given SSH command.
+func (a *App) OpenSSHTerminal(sshCmd string) error {
+	type candidate struct {
+		bin  string
+		args []string
+	}
+
+	// Build candidate list; each launches `sshCmd` in a shell so it stays open after disconnect
+	shell := []string{"bash", "-c", sshCmd + "; exec bash"}
+	candidates := []candidate{
+		{os.Getenv("TERMINAL"), append([]string{"-e"}, shell...)},
+		{"kitty", append([]string{"--"}, shell...)},
+		{"alacritty", append([]string{"-e"}, shell...)},
+		{"foot", append([]string{"--"}, shell...)},
+		{"wezterm", append([]string{"start", "--"}, shell...)},
+		{"ghostty", append([]string{"-e"}, shell...)},
+		{"gnome-terminal", append([]string{"--"}, shell...)},
+		{"konsole", append([]string{"-e"}, shell...)},
+		{"xfce4-terminal", append([]string{"-e"}, shell...)},
+		{"mate-terminal", append([]string{"-e"}, shell...)},
+		{"xterm", append([]string{"-e"}, shell...)},
+	}
+
+	for _, c := range candidates {
+		if c.bin == "" {
+			continue
+		}
+		if _, err := exec.LookPath(c.bin); err != nil {
+			continue
+		}
+		cmd := exec.Command(c.bin, c.args...)
+		cmd.Env = os.Environ()
+		return cmd.Start() // detached — don't wait
+	}
+	return fmt.Errorf("kein Terminal-Emulator gefunden (kitty, alacritty, gnome-terminal, konsole, xterm …)")
+}
+
+// ClearClipboard overwrites clipboard contents with an empty string.
+func (a *App) ClearClipboard() error {
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		if err := exec.Command("wl-copy", "--clear").Run(); err == nil {
+			return nil
+		}
+		return exec.Command("wl-copy", "").Run()
+	}
+	if err := exec.Command("xclip", "-selection", "clipboard", "-i", "/dev/null").Run(); err == nil {
+		return nil
+	}
+	return exec.Command("xsel", "--clipboard", "--clear").Run()
 }
