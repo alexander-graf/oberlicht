@@ -152,7 +152,24 @@ pass init <deine-gpg-schluessel-id>   # Passwort-Speicher initialisieren
 
 ## Installation
 
-### Fertiges Binary herunterladen (empfohlen)
+### Ein-Befehl-Installation (Ubuntu / Linux Mint / Debian)
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/alexander-graf/oberlicht/main/install.sh)
+```
+
+Das Skript:
+- installiert Laufzeit-Abhängigkeiten (`pass`, `gpg`, `xdotool`, `xclip`, …)
+- lädt das neueste vorgefertigte Binary von GitHub Releases herunter
+- installiert es nach `~/.local/bin/`
+- erstellt einen `.desktop`-Launcher-Eintrag
+- zeigt Hinweise zur erstmaligen `pass`-Einrichtung wenn nötig
+
+Für Arch, Fedora, openSUSE: das Skript installiert nur Laufzeit-Abhängigkeiten — bitte aus dem Quellcode bauen (siehe unten).
+
+---
+
+### Fertiges Binary manuell herunterladen
 
 Vorgefertigte Binaries für **Ubuntu 22.04 / Linux Mint 21+ / Debian 12+** stehen auf der [Releases-Seite](https://github.com/alexander-graf/oberlicht/releases) bereit.
 

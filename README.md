@@ -152,7 +152,24 @@ pass init <your-gpg-key-id>      # initialise the store
 
 ## Installation
 
-### Download binary (recommended)
+### One-line install (Ubuntu / Linux Mint / Debian)
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/alexander-graf/oberlicht/main/install.sh)
+```
+
+This script:
+- installs runtime dependencies (`pass`, `gpg`, `xdotool`, `xclip`, …)
+- downloads the latest pre-built binary from GitHub Releases
+- installs it to `~/.local/bin/`
+- creates a `.desktop` launcher entry
+- shows first-time `pass` setup instructions if needed
+
+For Arch, Fedora, openSUSE: the script installs runtime deps only — build from source (see below).
+
+---
+
+### Download binary (manual)
 
 Pre-built binaries for **Ubuntu 22.04 / Linux Mint 21+ / Debian 12+** are available on the [Releases](https://github.com/alexander-graf/oberlicht/releases) page.
 
