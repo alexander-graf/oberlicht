@@ -340,6 +340,23 @@ func (a *App) OpenSSHTerminal(sshCmd string) error {
 	return fmt.Errorf("kein Terminal-Emulator gefunden (kitty, alacritty, gnome-terminal, konsole, xterm …)")
 }
 
+// SetPrimaryClipboard writes text to the primary selection (middle-click paste).
+func (a *App) SetPrimaryClipboard(text string) error {
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		cmd := exec.Command("wl-copy", "--primary")
+		cmd.Stdin = strings.NewReader(text)
+		return cmd.Run()
+	}
+	cmd := exec.Command("xclip", "-selection", "primary")
+	cmd.Stdin = strings.NewReader(text)
+	if err := cmd.Run(); err == nil {
+		return nil
+	}
+	cmd = exec.Command("xsel", "--primary", "--input")
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
+}
+
 // ClearClipboard overwrites clipboard contents with an empty string.
 func (a *App) ClearClipboard() error {
 	if os.Getenv("WAYLAND_DISPLAY") != "" {

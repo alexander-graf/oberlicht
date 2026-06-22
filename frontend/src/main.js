@@ -11,7 +11,7 @@ import {
   BackupStore, RestoreStore,
   AutoFill, AutoFillSSH, AutoFillCmd, ExecuteMacro,
   GetSSHFingerprint, CheckDependencies,
-  GetTOTP, OpenSSHTerminal, ClearClipboard
+  GetTOTP, OpenSSHTerminal, ClearClipboard, SetPrimaryClipboard
 } from '../wailsjs/go/main/App';
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -541,10 +541,28 @@ function showDetail(entry, details) {
     };
     refreshTOTP();
     totpTimer = setInterval(refreshTOTP, 1000);
+
+    const getRawCode = () => panel.querySelector('#totp-code')?.textContent?.replace(/\s/g,'') || '';
+
+    // 📋 button → normal clipboard
     panel.querySelector('#totp-copy')?.addEventListener('click', () => {
-      const code = panel.querySelector('#totp-code')?.textContent?.replace(/\s/g,'') || '';
-      copyText(code, panel.querySelector('#totp-copy'));
+      copyText(getRawCode(), panel.querySelector('#totp-copy'));
     });
+
+    // Click on ring or code → primary selection (middle-click paste)
+    const flashPrimary = el => {
+      el.classList.add('totp-flash');
+      setTimeout(() => el.classList.remove('totp-flash'), 400);
+    };
+    panel.querySelector('.totp-ring')?.addEventListener('click', () => {
+      const code = getRawCode();
+      if (code) SetPrimaryClipboard(code).then(() => flashPrimary(panel.querySelector('.totp-ring')));
+    });
+    panel.querySelector('#totp-code')?.addEventListener('click', () => {
+      const code = getRawCode();
+      if (code) SetPrimaryClipboard(code).then(() => flashPrimary(panel.querySelector('#totp-code')));
+    });
+
     // Clean up timer when detail panel is replaced
     const obs = new MutationObserver(() => { if (!document.contains(totpSec)) { clearInterval(totpTimer); obs.disconnect(); } });
     obs.observe(document.getElementById('main'), { childList: true });

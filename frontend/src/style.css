@@ -1181,3 +1181,8 @@ html, body {
   color: var(--text);
   flex: 1;
 }
+.totp-ring, #totp-code { cursor: pointer; }
+.totp-ring:hover { opacity: .8; }
+#totp-code:hover { color: var(--accent); }
+@keyframes totp-flash { 0%,100% { opacity:1; } 50% { opacity:.3; } }
+.totp-flash { animation: totp-flash .4s ease; }
