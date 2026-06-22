@@ -1186,3 +1186,16 @@ html, body {
 #totp-code:hover { color: var(--accent); }
 @keyframes totp-flash { 0%,100% { opacity:1; } 50% { opacity:.3; } }
 .totp-flash { animation: totp-flash .4s ease; }
+
+/* ── Sensitive field masking ── */
+.field-secret-val {
+  font-family: monospace;
+  letter-spacing: .08em;
+  color: var(--muted);
+}
+.field-secret-toggle {
+  margin-left: 4px;
+  font-size: 13px;
+  opacity: .5;
+}
+.field-secret-toggle:hover { opacity: 1; }

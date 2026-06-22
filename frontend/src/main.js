@@ -492,16 +492,44 @@ function showDetail(entry, details) {
     const table = el('table', 'fields-table');
     for (const f of details.fields.filter(f => !AF_META_KEYS.includes(f.key))) {
       const tr = document.createElement('tr');
-      const isUrl = f.key === 'url' || f.value.startsWith('http');
-      const valHtml = isUrl
-        ? `<span class="field-url" data-url="${escHtml(f.value)}">${escHtml(f.value)}</span>`
-        : `<span>${escHtml(f.value)}</span>`;
-      tr.innerHTML = `
-        <td>${escHtml(f.key)}</td>
-        <td>${valHtml}</td>
-        <td class="field-copy-cell">
-          <button class="field-copy-btn" data-val="${escHtml(f.value)}">📋</button>
-        </td>`;
+      const isSensitive = SENSITIVE_FIELD_KEYS.includes(f.key.toLowerCase());
+      const isUrl = !isSensitive && (f.key === 'url' || f.value.startsWith('http'));
+      let valCell;
+      if (isSensitive) {
+        valCell = document.createElement('td');
+        const span = document.createElement('span');
+        span.className = 'field-secret-val';
+        span.textContent = mask(f.value);
+        span.dataset.revealed = '0';
+        span.dataset.val = f.value;
+        const toggle = document.createElement('button');
+        toggle.className = 'icon-btn field-secret-toggle';
+        toggle.title = 'Anzeigen';
+        toggle.textContent = '👁';
+        toggle.addEventListener('click', () => {
+          const shown = span.dataset.revealed === '1';
+          span.textContent = shown ? mask(f.value) : f.value;
+          span.dataset.revealed = shown ? '0' : '1';
+          toggle.title = shown ? 'Anzeigen' : 'Verbergen';
+        });
+        valCell.appendChild(span);
+        valCell.appendChild(toggle);
+      } else {
+        valCell = document.createElement('td');
+        valCell.innerHTML = isUrl
+          ? `<span class="field-url" data-url="${escHtml(f.value)}">${escHtml(f.value)}</span>`
+          : `<span>${escHtml(f.value)}</span>`;
+      }
+      tr.innerHTML = `<td>${escHtml(f.key)}</td>`;
+      tr.appendChild(valCell);
+      const copyTd = document.createElement('td');
+      copyTd.className = 'field-copy-cell';
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'field-copy-btn';
+      copyBtn.dataset.val = f.value;
+      copyBtn.textContent = '📋';
+      copyTd.appendChild(copyBtn);
+      tr.appendChild(copyTd);
       table.appendChild(tr);
     }
     sec.appendChild(table);
@@ -639,7 +667,8 @@ function showDetail(entry, details) {
 }
 
 // ── Auto-Fill ──────────────────────────────────────────────────────────────
-const AF_META_KEYS    = ['autofill', 'autofill-type', 'autofill-delay', 'autofill-pw-delay', 'autofill-cmd'];
+const AF_META_KEYS       = ['autofill', 'autofill-type', 'autofill-delay', 'autofill-pw-delay', 'autofill-cmd'];
+const SENSITIVE_FIELD_KEYS = ['totp','otp','secret','2fa'];
 const USER_FIELD_KEYS = ['login','user','username','email','e-mail','mail','benutzername','account','name','benutzer'];
 const SSH_HOST_KEYS   = ['host','server','hostname','ip','adresse'];
 const SSH_PORT_KEYS   = ['port'];
