@@ -1147,3 +1147,37 @@ html, body {
 }
 .af-bar-on .af-macro-steps { color: var(--text); }
 .af-bar-on .af-macro-steps code { border-color: var(--accent-dim); }
+
+/* ── TOTP ── */
+.totp-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+}
+.totp-ring {
+  width: 52px;
+  height: 52px;
+  transform: rotate(-90deg);
+  flex-shrink: 0;
+}
+.totp-ring-bg {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 3;
+}
+.totp-ring-arc {
+  fill: none;
+  stroke: var(--success);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dasharray .5s linear, stroke .3s;
+}
+.totp-code {
+  font-family: monospace;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  color: var(--text);
+  flex: 1;
+}
